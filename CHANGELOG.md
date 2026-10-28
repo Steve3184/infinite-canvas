@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [调整] 移除内置的 OpenAI 默认渠道，首次打开只保留 S3AI 预设渠道（含 gemini-nano-banana-2.1 与 nai-diffusion 系列生图模型），默认生图、视频、语音模型改为 S3AI 模型，文本模型需导入或拉取后选择；删除全部渠道后会恢复 S3AI 预设。
++ [修复] 拉取模型时 nai-diffusion 系列和 gemini-nano-banana 等生图模型不再被误判为文本模型；Gemini 系列生图模型经 OpenAI 兼容接口生成多张时改为逐张请求。
 + [调整] 应用和文档 Docker 镜像改为推送到当前仓库所有者的 ghcr.io 命名空间（ghcr.io/steve3184/...），推送 main 分支和 v* 标签时自动构建，并更新 latest 标签。
 + [调整] 通过链接参数 baseUrl 和 apiKey 导入渠道后，会自动拉取模型，把该渠道设为首位，并将各类默认模型切换到该渠道。
 + [新增] 默认渠道新增 S3AI 预设（https://api.furry.vg），内置 minimax-h3、kling-v3、kling-o3、veo-3.1-lite 视频模型和 azure-tts、unreal-speech-v8、indextts-2 语音模型，API Key 需自行填写。

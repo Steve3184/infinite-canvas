@@ -81,50 +81,24 @@ const S3AI_BASE_URL = "https://api.furry.vg";
 export const LOCAL_PROXY_PACKAGE = "@basketikun/canvas-proxy";
 export const DEFAULT_LOCAL_PROXY_URL = "http://127.0.0.1:23210";
 
+const S3AI_MODELS: ChannelModel[] = [
+    ...["gemini-nano-banana-2.1", "nai-diffusion-3", "nai-diffusion-4-5-curated", "nai-diffusion-4-5-full", "nai-diffusion-4-curated-preview", "nai-diffusion-4-full", "nai-diffusion-5-curated", "nai-diffusion-5-full", "nai-diffusion-furry-3"].map((name) => ({ name, capability: "image" as const })),
+    ...["minimax-h3", "kling-v3", "kling-o3", "veo-3.1-lite", "agnes-video-2.5", "agnes-video-2.5-flash"].map((name) => ({ name, capability: "video" as const })),
+    ...["azure-tts", "unreal-speech-v8", "indextts-2"].map((name) => ({ name, capability: "audio" as const })),
+];
+
 export const defaultConfig: AiConfig = {
     channelMode: "local",
-    baseUrl: OPENAI_BASE_URL,
+    baseUrl: S3AI_BASE_URL,
     apiKey: "",
     apiFormat: "openai",
-    channels: [
-        {
-            id: "default",
-            name: i18n.t("config.channels.defaultName"),
-            baseUrl: OPENAI_BASE_URL,
-            apiKey: "",
-            apiFormat: "openai",
-            models: [
-                { name: "gpt-image-2", capability: "image" },
-                { name: "grok-imagine-video", capability: "video" },
-                { name: "gpt-5.5", capability: "text" },
-                { name: "gpt-4o-mini-tts", capability: "audio" },
-            ],
-        },
-        {
-            id: "s3ai",
-            name: "S3AI",
-            baseUrl: S3AI_BASE_URL,
-            apiKey: "",
-            apiFormat: "openai",
-            models: [
-                { name: "minimax-h3", capability: "video" },
-                { name: "kling-v3", capability: "video" },
-                { name: "kling-o3", capability: "video" },
-                { name: "veo-3.1-lite", capability: "video" },
-                { name: "agnes-video-2.5", capability: "video" },
-                { name: "agnes-video-2.5-flash", capability: "video" },
-                { name: "azure-tts", capability: "audio" },
-                { name: "unreal-speech-v8", capability: "audio" },
-                { name: "indextts-2", capability: "audio" },
-            ],
-        },
-    ],
-    model: "default::gpt-image-2",
-    imageModel: "default::gpt-image-2",
-    videoModel: "default::grok-imagine-video",
-    textModel: "default::gpt-5.5",
-    audioModel: "default::gpt-4o-mini-tts",
-    audioVoice: "alloy",
+    channels: [{ id: "s3ai", name: "S3AI", baseUrl: S3AI_BASE_URL, apiKey: "", apiFormat: "openai", models: S3AI_MODELS }],
+    model: "s3ai::gemini-nano-banana-2.1",
+    imageModel: "s3ai::gemini-nano-banana-2.1",
+    videoModel: "s3ai::minimax-h3",
+    textModel: "",
+    audioModel: "s3ai::azure-tts",
+    audioVoice: "zh-CN-XiaoxiaoNeural",
     audioFormat: "mp3",
     audioSpeed: "1",
     audioInstructions: "",
@@ -135,7 +109,7 @@ export const defaultConfig: AiConfig = {
     videoMode: "frames",
     systemPrompt: "",
     reasoningEffort: "auto",
-    models: ["default::gpt-image-2", "default::grok-imagine-video", "default::gpt-5.5", "default::gpt-4o-mini-tts", ...["minimax-h3", "kling-v3", "kling-o3", "veo-3.1-lite", "agnes-video-2.5", "agnes-video-2.5-flash", "azure-tts", "unreal-speech-v8", "indextts-2"].map((name) => `s3ai::${name}`)],
+    models: S3AI_MODELS.map((model) => `s3ai::${model.name}`),
     quality: "auto",
     size: "1:1",
     background: "",
@@ -177,7 +151,7 @@ export function boolConfig(value: string, fallback: boolean) {
     return value ? value === "true" : fallback;
 }
 const AUDIO_KEYWORDS = ["audio", "tts", "speech", "voice", "music", "sound"];
-const IMAGE_KEYWORDS = ["seedream", "gpt-image", "image", "dall-e", "dalle", "imagen", "flux", "sdxl", "stable-diffusion", "midjourney"];
+const IMAGE_KEYWORDS = ["seedream", "gpt-image", "image", "dall-e", "dalle", "imagen", "flux", "sdxl", "diffusion", "nano-banana", "midjourney"];
 
 /** Best-effort default capability for a freshly fetched model name; user can override in the channel editor. */
 export function guessCapability(name: string): ModelCapability {
@@ -275,7 +249,6 @@ export const useConfigStore = create<ConfigStore>()(
                 const persistedConfig = (persistedState.config || {}) as Partial<AiConfig>;
                 const persistedWebdav = (persistedState.webdav || {}) as Partial<WebdavSyncConfig>;
                 const config = { ...defaultConfig, ...persistedConfig };
-                if (!Array.isArray(persistedConfig.channels)) config.channels = [];
                 const channels = normalizeChannels(config);
                 const models = modelOptionsFromChannels(channels);
                 return {
@@ -289,7 +262,7 @@ export const useConfigStore = create<ConfigStore>()(
                         models,
                         imageModel: normalizeModelOptionValue(config.imageModel || config.model, channels),
                         videoModel: normalizeModelOptionValue(config.videoModel, channels),
-                        textModel: normalizeModelOptionValue(config.textModel || config.model, channels),
+                        textModel: normalizeModelOptionValue(config.textModel, channels),
                         audioModel: normalizeModelOptionValue(config.audioModel || defaultConfig.audioModel, channels),
                         audioVoice: config.audioVoice || defaultConfig.audioVoice,
                         audioFormat: config.audioFormat || defaultConfig.audioFormat,
@@ -503,19 +476,7 @@ function normalizeChannels(config: AiConfig) {
             models: normalizeChannelModels(channel.models),
         }),
     );
-    if (!channels.length) {
-        channels.push(
-            createModelChannel({
-                id: "default",
-                name: i18n.t("config.channels.defaultName"),
-                baseUrl: config.baseUrl || defaultConfig.baseUrl,
-                apiKey: config.apiKey || "",
-                apiFormat: config.apiFormat || defaultConfig.apiFormat,
-                models: normalizeChannelModels([config.model, config.imageModel, config.videoModel, config.textModel, config.audioModel].map(modelOptionName)),
-            }),
-        );
-    }
-    return channels;
+    return channels.length ? channels : defaultConfig.channels.map((channel) => createModelChannel(channel));
 }
 
 export function defaultBaseUrlForApiFormat(apiFormat: ApiCallFormat) {

@@ -110,6 +110,11 @@ const IMAGE_REQUEST_TIMEOUT_MS = 10 * 60_000;
 
 const GEMINI_SUPPORTED_RATIOS = ["1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9"];
 
+/** Gemini image models behind an OpenAI-compatible gateway (e.g. new-api) only accept n=1, so batches are split. */
+function imageRequestCounts(model: string, n: number) {
+    return /gemini|nano-banana/i.test(model) ? Array.from({ length: n }, () => 1) : [n];
+}
+
 function normalizeQuality(quality: string) {
     const value = quality.trim().toLowerCase();
     return IMAGE_QUALITY_VALUES.includes(value) ? value : undefined;
@@ -725,12 +730,12 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     const requestSize = resolveRequestSize(config.size);
     const background = normalizeBackground(config.background);
     try {
-        const response = await axios.post<ImageApiResponse>(
+        const responses = await Promise.all(imageRequestCounts(requestConfig.model, n).map((count) => axios.post<ImageApiResponse>(
             aiApiUrl(requestConfig, "/images/generations"),
             {
                 model: requestConfig.model,
                 prompt: withSystemPrompt(requestConfig, prompt),
-                n,
+                n: count,
                 ...(quality ? { quality } : {}),
                 ...(requestSize ? { size: requestSize } : {}),
                 ...(background ? { background } : {}),
@@ -743,9 +748,8 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                 signal: options?.signal,
                 timeout: IMAGE_REQUEST_TIMEOUT_MS,
             },
-        );
-        const images = await parseImagePayload(response.data);
-        return images;
+        )));
+        return responses.flatMap((response) => parseImagePayload(response.data));
     } catch (error) {
         throw new Error(readAxiosError(error, apiText("requestFailed")));
     }
@@ -787,32 +791,34 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const quality = normalizeQuality(config.quality);
     const requestSize = resolveRequestSize(config.size);
     const background = normalizeBackground(config.background);
-    const formData = new FormData();
-    formData.set("model", requestConfig.model);
-    formData.set("prompt", withSystemPrompt(requestConfig, requestPrompt));
-    formData.set("n", String(n));
-    // gpt-image models reject response_format; they always return b64.
-    if (!/gpt-image/.test(requestConfig.model)) {
-        formData.set("response_format", "b64_json");
-    }
-    formData.set("output_format", IMAGE_OUTPUT_FORMAT);
-    if (quality) {
-        formData.set("quality", quality);
-    }
-    if (requestSize) {
-        formData.set("size", requestSize);
-    }
-    if (background) {
-        formData.set("background", background);
-    }
     const files = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
-    const imageField = files.length > 1 ? "image[]" : "image";
-    files.forEach((file) => formData.append(imageField, file));
+    const buildForm = (count: number) => {
+        const formData = new FormData();
+        formData.set("model", requestConfig.model);
+        formData.set("prompt", withSystemPrompt(requestConfig, requestPrompt));
+        formData.set("n", String(count));
+        // gpt-image models reject response_format; they always return b64.
+        if (!/gpt-image/.test(requestConfig.model)) {
+            formData.set("response_format", "b64_json");
+        }
+        formData.set("output_format", IMAGE_OUTPUT_FORMAT);
+        if (quality) {
+            formData.set("quality", quality);
+        }
+        if (requestSize) {
+            formData.set("size", requestSize);
+        }
+        if (background) {
+            formData.set("background", background);
+        }
+        const imageField = files.length > 1 ? "image[]" : "image";
+        files.forEach((file) => formData.append(imageField, file));
+        return formData;
+    };
 
     try {
-        const response = await axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS });
-        const images = await parseImagePayload(response.data);
-        return images;
+        const responses = await Promise.all(imageRequestCounts(requestConfig.model, n).map((count) => axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), buildForm(count), { headers: aiHeaders(requestConfig), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS })));
+        return responses.flatMap((response) => parseImagePayload(response.data));
     } catch (error) {
         throw new Error(readAxiosError(error, apiText("requestFailed")));
     }

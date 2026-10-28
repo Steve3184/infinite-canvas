@@ -5,6 +5,8 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 # 待测试
 
+- 内置渠道：全新浏览器打开时只应有 S3AI 渠道（不再有 OpenAI 默认渠道），包含 gemini-nano-banana-2.1 和 nai-diffusion 系列生图模型；默认生图为 `gemini-nano-banana-2.1`、视频为 `minimax-h3`、语音为 `azure-tts`（音色 `zh-CN-XiaoxiaoNeural`），默认文本模型为空，需手动选择或通过链接导入后自动选择。删除全部渠道并刷新后应恢复 S3AI 预设。
+- 生图模型识别：拉取模型时 `nai-diffusion-*`、`gemini-nano-banana-*` 应识别为生图模型并出现在生图模型选择中；已保存为文本类型的模型保持原类型，需要在渠道编辑里手动改为生图。生图工作台使用 OpenAI 格式渠道的 Gemini / nano-banana 模型一次生成多张时，应拆成每张一次 `n=1` 请求并显示全部结果；其他模型仍按 `n` 单次请求。
 - Docker 镜像 CI：推送 `main` 分支时应触发应用和文档两个镜像工作流，构建 amd64 与 arm64，并推送多架构镜像 `ghcr.io/steve3184/infinite-canvas`、`ghcr.io/steve3184/infinite-canvas-docs`，标签为 `latest` 和短提交 SHA；推送 `v*` 标签时还应带上版本标签。GHCR 包设为公开后，使用更新后的 compose 文件执行 `docker compose pull` 应能拉到这些镜像。
 - S3AI Agnes 视频：S3AI 预设渠道应包含 agnes-video-2.5、agnes-video-2.5-flash，请求发往 S3AI 的 `/v1/videos`，`size` 固定 `"720P"`，`seconds` 为 4–12 的字符串。无参考时为 `mode: "text"`；首尾帧模式下 1–2 张图发送 `mode: "keyframe"` 与 `first_frame` / `last_frame`；全能参考模式或超过 2 张图发送 `mode: "reference"`，最多 5 张 `images`。接入参考视频或音频时应在请求前给出明确提示。轮询每 2 秒请求 `/v1/video/generations/{id}`，最长 30 分钟，`data.status` 为 `SUCCESS` / `FAILURE` 时结束，失败时显示 `fail_reason`，完成后通过带鉴权的 `/v1/videos/{id}/content` 下载。本地图片以 Data URL 提交，需要网关的 Agnes 渠道开启自动图片 URL 选项才能生效。
 - 视频设置按模型限制：选择 S3AI 或 Agnes 模型时，时长滑块、分辨率和比例只显示该模型支持的取值（minimax-h3 1–15 秒、Kling 3–15 秒且无 480p、Veo 4/6/8 秒、Agnes 4–12 秒），隐藏自定义分辨率和 W/H 输入；画布按钮和视频工作台标签显示对齐后的值。kling-v3、veo-3.1-lite 在首尾帧模式下显示首尾帧尚未验证稳定的提示。其他模型保持 4–30 秒滑块和原有选项。
