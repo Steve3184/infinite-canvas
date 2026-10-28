@@ -99,8 +99,50 @@ export function readMediaDimensions(size: string, scale: string, ratio: string) 
     return parsePixelSize(computed) || { width: 0, height: 0 };
 }
 
-export function clampVideoSeconds(value: string) {
+/** S3AI video models with fixed seconds / resolution / ratio values; settings and requests snap to the nearest value. Agnes models take the official Agnes body format. */
+export type VideoModelSpec = { pollMs: number; seconds: number[]; resolutions: number[]; ratios: string[]; authDownload?: boolean; agnes?: boolean; unstableFrames?: boolean };
+const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, index) => from + index);
+const VIDEO_MODEL_SPECS: Record<string, VideoModelSpec> = {
+    "minimax-h3": { pollMs: 5000, seconds: range(1, 15), resolutions: [480, 768, 1088, 1440], ratios: ["16:9", "9:16"], authDownload: true },
+    "kling-v3": { pollMs: 15000, seconds: range(3, 15), resolutions: [720, 1080, 2160], ratios: ["16:9", "1:1", "9:16"], unstableFrames: true },
+    "kling-o3": { pollMs: 15000, seconds: range(3, 15), resolutions: [720, 1080, 2160], ratios: ["16:9", "1:1", "9:16"] },
+    "veo-3.1-lite": { pollMs: 15000, seconds: [4, 6, 8], resolutions: [720, 1080], ratios: ["16:9", "9:16"], unstableFrames: true },
+    // The S3AI gateway (new-api Agnes adaptor) only accepts 720P and does not forward aspect_ratio, audios or videos.
+    "agnes-video-2.5": { pollMs: 2000, seconds: range(4, 12), resolutions: [720], ratios: ["16:9"], agnes: true },
+    "agnes-video-2.5-flash": { pollMs: 2000, seconds: range(4, 12), resolutions: [720], ratios: ["16:9"], agnes: true },
+};
+
+export function videoModelSpec(model: string): VideoModelSpec | undefined {
+    return VIDEO_MODEL_SPECS[(model.split("::").pop() || "").trim().toLowerCase()];
+}
+
+function nearestNumber(value: number, list: number[]) {
+    return list.reduce((best, item) => (Math.abs(item - value) < Math.abs(best - value) ? item : best));
+}
+
+function ratioNumber(value: string) {
+    const ratio = parseAspectRatio(value);
+    return ratio ? ratio.width / ratio.height : 16 / 9;
+}
+
+export function snapVideoResolution(value: string, model = "") {
+    const resolution = parseVideoResolution(value);
+    const spec = videoModelSpec(model);
+    return spec ? String(nearestNumber(Number(resolution), spec.resolutions)) : resolution;
+}
+
+export function snapVideoRatio(size: string, model = "") {
+    const ratio = inferVideoRatio(size || "auto");
+    const spec = videoModelSpec(model);
+    if (!spec) return ratio;
+    const target = ratioNumber(ratio === "auto" ? "16:9" : ratio);
+    return spec.ratios.reduce((best, item) => (Math.abs(ratioNumber(item) - target) < Math.abs(ratioNumber(best) - target) ? item : best));
+}
+
+export function clampVideoSeconds(value: string, model = "") {
     const seconds = Math.floor(Number(value) || 6);
+    const spec = videoModelSpec(model);
+    if (spec) return String(nearestNumber(seconds, spec.seconds));
     return String(Math.max(VIDEO_SECONDS_MIN, Math.min(VIDEO_SECONDS_MAX, seconds)));
 }
 

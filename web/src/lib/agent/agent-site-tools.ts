@@ -225,7 +225,7 @@ function runVideoWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
         applied.size = input.size;
     }
     if (input.seconds != null && String(input.seconds).trim()) {
-        const seconds = clampVideoSeconds(String(input.seconds));
+        const seconds = clampVideoSeconds(String(input.seconds), useConfigStore.getState().config.videoModel);
         configStore.updateConfig("videoSeconds", seconds);
         applied.seconds = seconds;
     }

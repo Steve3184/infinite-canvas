@@ -3,7 +3,7 @@ import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
 import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
-import { clampVideoSeconds, computeVideoSize, inferVideoRatio } from "@/lib/media-size";
+import { clampVideoSeconds, computeVideoSize, inferVideoRatio, snapVideoRatio, snapVideoResolution, videoModelSpec, type VideoModelSpec } from "@/lib/media-size";
 import { getMediaBlob, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
 import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
@@ -32,6 +32,9 @@ export type VideoGenerationTaskState = { status: "pending" } | { status: "comple
 /** Results for scripted (plugin) video models, which run their own create+poll in one shot at task creation. */
 const pluginVideoResults = new Map<string, VideoGenerationResult>();
 
+/** S3AI spec models poll at their documented interval for up to 30 minutes. */
+const SPEC_VIDEO_TIMEOUT_MS = 30 * 60_000;
+
 function aiApiUrl(config: AiConfig, path: string) {
     return buildApiUrl(config.baseUrl, path);
 }
@@ -48,15 +51,16 @@ export async function requestVideoGeneration(config: AiConfig, prompt: string, r
 }
 
 export async function waitForVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationResult> {
-    for (let attempt = 0; attempt < 120; attempt += 1) {
+    const spec = videoModelSpec(task.model);
+    const deadline = Date.now() + (spec ? SPEC_VIDEO_TIMEOUT_MS : 120 * 2500);
+    for (;;) {
         if (options?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
         const state = await pollVideoGenerationTask(config, task, options);
         if (state.status === "completed") return state.result;
         if (state.status === "failed") throw videoTaskFailed(state.error);
-        if (attempt === 119) throw new Error(apiText("videoTimeout", { provider: "" }));
-        await delay(2500, options?.signal);
+        if (Date.now() >= deadline) throw new Error(apiText("videoTimeout", { provider: "" }));
+        await delay(spec?.pollMs || 2500, options?.signal);
     }
-    throw new Error(apiText("videoTimeout", { provider: "" }));
 }
 
 export function isVideoTaskFailed(error: unknown) {
@@ -147,6 +151,9 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
 }
 
 async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
+    const spec = videoModelSpec(model);
+    if (spec?.agnes) return createAgnesVideoTask(config, model, prompt, references, options);
+    if (spec) return createS3aiVideoTask(config, model, spec, prompt, references, options);
     const images = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
     const videos = await Promise.all((options?.videos || []).map((video) => referenceMediaToFile(video, "ref.mp4", "invalidReferenceVideo", options)));
     const audios = await Promise.all((options?.audios || []).map((audio) => referenceMediaToFile(audio, "ref.mp3", "invalidReferenceAudio", options)));
@@ -190,10 +197,88 @@ async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: st
     }
 }
 
+async function createS3aiVideoTask(config: AiConfig, model: string, spec: VideoModelSpec, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
+    const name = modelOptionName(model).trim().toLowerCase();
+    const images = await Promise.all(references.map((image) => imageToDataUrl(image)));
+    const videos = await Promise.all((options?.videos || []).map(async (video) => readFileAsDataUrl(await referenceMediaToFile(video, "ref.mp4", "invalidReferenceVideo", options))));
+    const audios = await Promise.all((options?.audios || []).map(async (audio) => readFileAsDataUrl(await referenceMediaToFile(audio, "ref.mp3", "invalidReferenceAudio", options))));
+    const body: Record<string, unknown> = {
+        model: name,
+        prompt,
+        resolution: `${snapVideoResolution(config.vquality, model)}p`,
+        aspect_ratio: snapVideoRatio(config.size, model),
+    };
+    const referenceVideo = name === "kling-o3" ? videos[0] : undefined;
+    if (!referenceVideo) body.seconds = Number(clampVideoSeconds(config.videoSeconds, model));
+    if (name === "minimax-h3") {
+        if (images.length) {
+            body.reference_images = images.slice(0, 6);
+            if (audios.length) body.reference_audios = audios.slice(0, 3);
+        }
+    } else {
+        body.audio = boolConfig(config.videoGenerateAudio, true);
+        if (referenceVideo) {
+            body.input_video = referenceVideo;
+            if (images.length) body.reference_images = images.slice(0, 4);
+        } else if (name === "kling-o3" && images.length && resolveVideoMode(config.videoMode, images.length) === "reference") {
+            body.reference_images = images.slice(0, 7);
+        } else {
+            if (images[0]) body.start_frame = images[0];
+            if (images[1]) body.end_frame = images[1];
+        }
+    }
+    try {
+        const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), body, { headers: aiHeaders(config, "application/json"), signal: options?.signal })).data);
+        if (!created.id) throw new Error(apiText("noVideoTaskId"));
+        return { id: created.id, provider: "openai", model };
+    } catch (error) {
+        throw new Error(readAxiosError(error, apiText("videoTaskCreateFailed")));
+    }
+}
+
+/** Agnes through the S3AI gateway: reference images go to keyframe (≤2, frames mode) or reference mode, at most 5. */
+async function createAgnesVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
+    if (options?.videos?.length || options?.audios?.length) throw new Error(apiText("agnesMediaUnsupported"));
+    // Public URLs keep the body small; Data URLs need the gateway channel's auto image URL option.
+    const images = await Promise.all(references.slice(0, 5).map(async (image) => [image.url, image.dataUrl].find((url) => url && isPublicMediaUrl(url)) || imageToDataUrl(image)));
+    const body: Record<string, unknown> = { model: modelOptionName(model).trim().toLowerCase(), prompt, seconds: clampVideoSeconds(config.videoSeconds, model), size: "720P", mode: "text" };
+    if (images.length && resolveVideoMode(config.videoMode, images.length) === "reference") {
+        body.mode = "reference";
+        body.images = images;
+    } else if (images.length) {
+        body.mode = "keyframe";
+        body.first_frame = images[0];
+        if (images[1]) body.last_frame = images[1];
+    }
+    try {
+        const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), body, { headers: aiHeaders(config, "application/json"), signal: options?.signal })).data);
+        if (!created.id) throw new Error(apiText("noVideoTaskId"));
+        return { id: created.id, provider: "openai", model };
+    } catch (error) {
+        throw new Error(readAxiosError(error, apiText("videoTaskCreateFailed")));
+    }
+}
+
+/** The gateway has no OpenAI video view for Agnes, so poll the generic task endpoint and download via /content. */
+async function pollAgnesVideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
+    try {
+        const payload = (await axios.get<{ code?: string; message?: string; data?: { status?: string; fail_reason?: string } | null }>(aiApiUrl(config, `/video/generations/${task.id}`), { headers: aiHeaders(config), signal: options?.signal })).data;
+        const status = payload.data?.status?.toUpperCase();
+        if (status === "FAILURE") return { status: "failed", error: readApiErrorMessage(payload.data?.fail_reason) || apiText("videoGenerationFailed") };
+        if (status !== "SUCCESS") return { status: "pending" };
+        const content = await axios.get<Blob>(aiApiUrl(config, `/videos/${task.id}/content`), { headers: aiHeaders(config), responseType: "blob", signal: options?.signal });
+        await assertVideoBlob(content.data);
+        return { status: "completed", result: { blob: content.data } };
+    } catch (error) {
+        throw new Error(readAxiosError(error, apiText("videoTaskQueryFailed")));
+    }
+}
+
 async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
+    if (videoModelSpec(task.model)?.agnes) return pollAgnesVideoTask(config, task, options);
     try {
         const video = unwrapVideoResponse((await axios.get<ApiVideoResponse>(aiApiUrl(config, `/videos/${task.id}`), { headers: aiHeaders(config), signal: options?.signal })).data);
-        const url = videoResultUrl(video);
+        const url = videoModelSpec(task.model)?.authDownload ? undefined : videoResultUrl(video);
         if (url) return { status: "completed", result: await videoResultFromUrl(url, options) };
         if (video.status === "completed") {
             const content = await axios.get<Blob>(aiApiUrl(config, `/videos/${task.id}/content`), { headers: aiHeaders(config), responseType: "blob", signal: options?.signal });

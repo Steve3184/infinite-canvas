@@ -2,6 +2,7 @@ name: Docker image
 
 on:
   push:
+    branches: ["main"]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -9,27 +10,33 @@ permissions:
   contents: read
   packages: write
 
-env:
-  IMAGE_NAME: ghcr.io/basketikun/infinite-canvas
-
 jobs:
   meta:
     runs-on: ubuntu-latest
     outputs:
+      image: ${{ steps.image.outputs.name }}
       tags: ${{ steps.meta.outputs.tags }}
       labels: ${{ steps.meta.outputs.labels }}
     steps:
+      # GHCR requires lowercase names; push under the repository owner's namespace.
+      - id: image
+        shell: bash
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/infinite-canvas" >> "$GITHUB_OUTPUT"
+
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_NAME }}
+          images: ${{ steps.image.outputs.name }}
           tags: |
+            type=raw,value=latest,enable=${{ github.ref_name == github.event.repository.default_branch || startsWith(github.ref, 'refs/tags/v') }}
             type=ref,event=tag
             type=sha,prefix=
 
   build:
     needs: meta
     runs-on: ${{ matrix.runner }}
+    env:
+      IMAGE_NAME: ${{ needs.meta.outputs.image }}
     strategy:
       fail-fast: false
       matrix:
@@ -80,6 +87,8 @@ jobs:
       - meta
       - build
     runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: ${{ needs.meta.outputs.image }}
     steps:
       - uses: docker/setup-buildx-action@v3
 

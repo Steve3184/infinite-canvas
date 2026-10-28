@@ -14,7 +14,7 @@ import type { AppLocale } from "@/i18n";
 import { exportAppConfig, importAppConfig } from "@/services/config-file";
 import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
 import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
-import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
+import { audioFormatOptionsOf, audioKindOf, audioVoiceOptionsOf, normalizeAudioFormatValue, normalizeAudioSpeedValue, normalizeAudioVoiceValue } from "@/lib/audio-generation";
 import { computeMediaSize, inferMediaRatio, inferMediaScale, mediaScaleOptions, parseVideoResolution } from "@/lib/media-size";
 import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 
@@ -252,10 +252,10 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                         <Select value={parseVideoResolution(config.vquality)} options={videoResolutionOptions} onChange={(value) => updateConfig("vquality", value)} />
                                     </Form.Item>
                                     <Form.Item label={t("config.preferences.audioVoice")} className="mb-4">
-                                        <Select value={config.audioVoice} options={audioVoiceOptions} onChange={(value) => updateConfig("audioVoice", value)} />
+                                        {audioKindOf(config) === "index" ? <Input value={config.audioVoice} placeholder="https://… / data:audio/wav;base64,…" onChange={(event) => updateConfig("audioVoice", event.target.value)} /> : <Select value={normalizeAudioVoiceValue(config.audioVoice, audioKindOf(config))} options={audioVoiceOptionsOf(audioKindOf(config))} onChange={(value) => updateConfig("audioVoice", value)} />}
                                     </Form.Item>
                                     <Form.Item label={t("config.preferences.audioFormat")} className="mb-4">
-                                        <Select value={config.audioFormat} options={audioFormatOptions} onChange={(value) => updateConfig("audioFormat", value)} />
+                                        <Select value={normalizeAudioFormatValue(config.audioFormat, audioKindOf(config))} options={audioFormatOptionsOf(audioKindOf(config))} onChange={(value) => updateConfig("audioFormat", value)} />
                                     </Form.Item>
                                     <Form.Item label={t("config.preferences.audioSpeed")} className="mb-4">
                                         <Input

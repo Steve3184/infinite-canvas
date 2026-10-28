@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import { App } from "antd";
 import { useTranslation } from "react-i18next";
 
+import { fetchChannelModels } from "@/services/api/image";
 import { useConfigStore } from "@/stores/use-config-store";
 import { usePromptSourceScheduler } from "@/hooks/use-prompt-source-scheduler";
 
@@ -12,6 +13,7 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
     const handledConfigParams = useRef(false);
     const importChannelCredentials = useConfigStore((state) => state.importChannelCredentials);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
+    const setDefaultChannel = useConfigStore((state) => state.setDefaultChannel);
 
     usePromptSourceScheduler();
 
@@ -33,7 +35,22 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
         else if (result.status === "updated") message.success(t("config.importedChannelUpdated", { name: result.channelName }));
         else if (result.status === "missing-base-url") message.error(t("config.importedChannelBaseUrlRequired"));
         else message.error(t("config.importedChannelBaseUrlInvalid"));
-    }, [importChannelCredentials, message, openConfigDialog, t]);
+        const channel = useConfigStore.getState().config.channels.find((item) => item.id === result.channelId);
+        if (!channel) return;
+        if (!channel.apiKey.trim()) {
+            setDefaultChannel(channel.id, []);
+            return;
+        }
+        fetchChannelModels(channel)
+            .then((names) => {
+                setDefaultChannel(channel.id, names);
+                message.success(t("config.importedChannelModelsLoaded", { count: names.length }));
+            })
+            .catch((error) => {
+                setDefaultChannel(channel.id, []);
+                message.error(t("config.importedChannelModelsFailed", { message: error instanceof Error ? error.message : String(error) }));
+            });
+    }, [importChannelCredentials, message, openConfigDialog, setDefaultChannel, t]);
 
     return <>{children}</>;
 }

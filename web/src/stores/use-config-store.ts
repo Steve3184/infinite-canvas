@@ -69,6 +69,7 @@ export type ConfigTabKey = "channels" | "local-proxy" | "preferences" | "prompt-
 
 export type ChannelCredentialsImportResult = {
     status: "created" | "updated" | "missing-base-url" | "invalid-base-url";
+    channelId?: string;
     channelName?: string;
 };
 
@@ -76,6 +77,7 @@ export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 const CHANNEL_MODEL_SEPARATOR = "::";
 const OPENAI_BASE_URL = "https://api.openai.com";
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
+const S3AI_BASE_URL = "https://api.furry.vg";
 export const LOCAL_PROXY_PACKAGE = "@basketikun/canvas-proxy";
 export const DEFAULT_LOCAL_PROXY_URL = "http://127.0.0.1:23210";
 
@@ -98,6 +100,24 @@ export const defaultConfig: AiConfig = {
                 { name: "gpt-4o-mini-tts", capability: "audio" },
             ],
         },
+        {
+            id: "s3ai",
+            name: "S3AI",
+            baseUrl: S3AI_BASE_URL,
+            apiKey: "",
+            apiFormat: "openai",
+            models: [
+                { name: "minimax-h3", capability: "video" },
+                { name: "kling-v3", capability: "video" },
+                { name: "kling-o3", capability: "video" },
+                { name: "veo-3.1-lite", capability: "video" },
+                { name: "agnes-video-2.5", capability: "video" },
+                { name: "agnes-video-2.5-flash", capability: "video" },
+                { name: "azure-tts", capability: "audio" },
+                { name: "unreal-speech-v8", capability: "audio" },
+                { name: "indextts-2", capability: "audio" },
+            ],
+        },
     ],
     model: "default::gpt-image-2",
     imageModel: "default::gpt-image-2",
@@ -115,7 +135,7 @@ export const defaultConfig: AiConfig = {
     videoMode: "frames",
     systemPrompt: "",
     reasoningEffort: "auto",
-    models: ["default::gpt-image-2", "default::grok-imagine-video", "default::gpt-5.5", "default::gpt-4o-mini-tts"],
+    models: ["default::gpt-image-2", "default::grok-imagine-video", "default::gpt-5.5", "default::gpt-4o-mini-tts", ...["minimax-h3", "kling-v3", "kling-o3", "veo-3.1-lite", "agnes-video-2.5", "agnes-video-2.5-flash", "azure-tts", "unreal-speech-v8", "indextts-2"].map((name) => `s3ai::${name}`)],
     quality: "auto",
     size: "1:1",
     background: "",
@@ -143,6 +163,7 @@ type ConfigStore = {
     shouldPromptContinue: boolean;
     updateConfig: <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
     importChannelCredentials: (input: { baseUrl?: string | null; apiKey?: string | null }) => ChannelCredentialsImportResult;
+    setDefaultChannel: (channelId: string, modelNames: string[]) => void;
     updateWebdavConfig: <K extends keyof WebdavSyncConfig>(key: K, value: WebdavSyncConfig[K]) => void;
     isAiConfigReady: (config: AiConfig, model: string) => boolean;
     openConfigDialog: (shouldPromptContinue?: boolean, tab?: ConfigTabKey) => void;
@@ -150,7 +171,7 @@ type ConfigStore = {
     clearPromptContinue: () => void;
 };
 
-const VIDEO_KEYWORDS = ["video", "sora", "veo", "kling", "wan", "hailuo"];
+const VIDEO_KEYWORDS = ["video", "sora", "veo", "kling", "wan", "hailuo", "minimax-h"];
 
 export function boolConfig(value: string, fallback: boolean) {
     return value ? value === "true" : fallback;
@@ -231,8 +252,9 @@ export const useConfigStore = create<ConfigStore>()(
                 const currentConfig = get().config;
                 const result = upsertChannelCredentials(currentConfig, input);
                 if (result.config !== currentConfig) set({ config: result.config });
-                return { status: result.status, channelName: result.channelName };
+                return { status: result.status, channelId: result.channelId, channelName: result.channelName };
             },
+            setDefaultChannel: (channelId, modelNames) => set((state) => ({ config: withDefaultChannel(state.config, channelId, modelNames) })),
             updateWebdavConfig: (key, value) =>
                 set((state) => ({
                     webdav: {
@@ -338,11 +360,11 @@ export function upsertChannelCredentials(
     if (matchingIndex >= 0) {
         const existing = config.channels[matchingIndex];
         if (existing.baseUrl === baseUrl && (!apiKey || existing.apiKey === apiKey)) {
-            return { status: "updated", channelName: existing.name, config };
+            return { status: "updated", channelId: existing.id, channelName: existing.name, config };
         }
         const updated = { ...existing, baseUrl, ...(apiKey ? { apiKey } : {}) };
         const channels = config.channels.map((channel, index) => (index === matchingIndex ? updated : channel));
-        return { status: "updated", channelName: existing.name, config: { ...config, channels } };
+        return { status: "updated", channelId: existing.id, channelName: existing.name, config: { ...config, channels } };
     }
 
     const channel = createModelChannel({
@@ -352,7 +374,32 @@ export function upsertChannelCredentials(
         apiFormat: "openai",
         models: [],
     });
-    return { status: "created", channelName: channel.name, config: { ...config, channels: [...config.channels, channel] } };
+    return { status: "created", channelId: channel.id, channelName: channel.name, config: { ...config, channels: [...config.channels, channel] } };
+}
+
+/** Move the channel to the front, merge fetched models, and point every capability's default model at it. */
+export function withDefaultChannel(config: AiConfig, channelId: string, modelNames: string[]): AiConfig {
+    const target = config.channels.find((channel) => channel.id === channelId);
+    if (!target) return config;
+    const channel = { ...target, models: normalizeChannelModels([...target.models, ...modelNames]) };
+    const channels = [channel, ...config.channels.filter((item) => item.id !== channelId)];
+    const pick = (capability: ModelCapability, current: string) => {
+        const decoded = decodeChannelModel(current);
+        if (decoded?.channelId === channelId && channel.models.some((model) => model.name === decoded.model)) return current;
+        // Jev (System One) models only serve /v1/systemone, so they cannot be the default chat model.
+        const model = channel.models.find((item) => item.capability === capability && !(capability === "text" && item.name.toLowerCase().startsWith("jev")));
+        return model ? encodeChannelModel(channelId, model.name) : current;
+    };
+    return {
+        ...config,
+        channels,
+        models: modelOptionsFromChannels(channels),
+        model: pick(modelCapabilityOf(config, config.model) || "image", config.model),
+        imageModel: pick("image", config.imageModel),
+        videoModel: pick("video", config.videoModel),
+        textModel: pick("text", config.textModel),
+        audioModel: pick("audio", config.audioModel),
+    };
 }
 
 function isHttpBaseUrl(baseUrl: string) {

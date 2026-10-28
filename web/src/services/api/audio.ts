@@ -1,7 +1,7 @@
 import axios from "axios";
 
 import i18n from "@/i18n";
-import { audioMimeType, normalizeAudioFormatValue, normalizeAudioSpeedValue, normalizeAudioVoiceValue } from "@/lib/audio-generation";
+import { audioKind, audioMimeType, normalizeAudioFormatValue, normalizeAudioSpeedValue, normalizeAudioVoiceValue } from "@/lib/audio-generation";
 import { uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
 import { runModelPlugin } from "./model-plugin";
@@ -23,7 +23,8 @@ function aiHeaders(config: AiConfig) {
 export async function requestAudioGeneration(config: AiConfig, prompt: string, options?: RequestOptions): Promise<Blob> {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.audioModel);
     const model = requestConfig.model.trim();
-    const format = normalizeAudioFormatValue(config.audioFormat);
+    const kind = audioKind(model);
+    const format = normalizeAudioFormatValue(config.audioFormat, kind);
     const script = resolveModelScript(config, config.model || config.audioModel);
     if (script) {
         if (!model) throw new Error(apiText("audioModelRequired"));
@@ -35,7 +36,7 @@ export async function requestAudioGeneration(config: AiConfig, prompt: string, o
                 script,
                 config: requestConfig,
                 prompt,
-                params: { voice: normalizeAudioVoiceValue(config.audioVoice), format, speed: normalizeAudioSpeedValue(config.audioSpeed), instructions: config.audioInstructions.trim() },
+                params: { voice: normalizeAudioVoiceValue(config.audioVoice, kind), format, speed: normalizeAudioSpeedValue(config.audioSpeed), instructions: config.audioInstructions.trim() },
                 signal: options?.signal,
             });
             return await audioPluginBlob(result, format);
@@ -45,18 +46,16 @@ export async function requestAudioGeneration(config: AiConfig, prompt: string, o
     }
     assertAudioConfig(requestConfig, model);
     const instructions = config.audioInstructions.trim();
+    const voice = normalizeAudioVoiceValue(config.audioVoice, kind);
+    if (!voice) throw new Error(apiText("audioVoiceRequired"));
+    const speed = Number(normalizeAudioSpeedValue(config.audioSpeed));
 
     try {
         const response = await axios.post<Blob>(
             aiApiUrl(requestConfig, "/audio/speech"),
-            {
-                model,
-                input: prompt,
-                voice: normalizeAudioVoiceValue(config.audioVoice),
-                response_format: format,
-                speed: Number(normalizeAudioSpeedValue(config.audioSpeed)),
-                ...(instructions ? { instructions } : {}),
-            },
+            kind === "index"
+                ? { model, input: prompt, voice, response_format: format }
+                : { model, input: prompt, voice, response_format: format, speed: kind === "unreal" ? Math.max(-1, Math.min(1, speed - 1)) : speed, ...(kind === "openai" && instructions ? { instructions } : {}) },
             { headers: aiHeaders(requestConfig), responseType: "blob", signal: options?.signal },
         );
         await assertAudioBlob(response.data);

@@ -2,7 +2,7 @@ import { type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
-import { audioFormatOptions, audioSpeedLabel, audioVoiceOptions, normalizeAudioFormatValue, normalizeAudioSpeedValue, normalizeAudioVoiceValue } from "@/lib/audio-generation";
+import { audioFormatOptionsOf, audioKindOf, audioSpeedLabel, audioVoiceOptionsOf, normalizeAudioFormatValue, normalizeAudioSpeedValue, normalizeAudioVoiceValue } from "@/lib/audio-generation";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import type { AiConfig } from "@/stores/use-config-store";
 
@@ -20,8 +20,11 @@ type AudioSettingsPanelProps = {
 
 export function AudioSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5" }: AudioSettingsPanelProps) {
     const { t } = useTranslation();
-    const voice = normalizeAudioVoiceValue(config.audioVoice);
-    const format = normalizeAudioFormatValue(config.audioFormat);
+    const kind = audioKindOf(config);
+    const voiceOptions = audioVoiceOptionsOf(kind);
+    const formatOptions = audioFormatOptionsOf(kind);
+    const voice = normalizeAudioVoiceValue(config.audioVoice, kind);
+    const format = normalizeAudioFormatValue(config.audioFormat, kind);
     const speed = normalizeAudioSpeedValue(config.audioSpeed);
 
     return (
@@ -29,8 +32,9 @@ export function AudioSettingsPanel({ config, onConfigChange, theme, showTitle = 
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <div className="text-lg font-semibold">{t("settingsPanels.audio.title")}</div> : null}
                 <SettingGroup title={t("settingsPanels.audio.voice")} color={theme.node.muted}>
+                    {kind === "index" ? <input className="h-9 w-full rounded-full border bg-transparent px-3 text-sm outline-none" style={{ borderColor: theme.node.stroke, color: theme.node.text }} value={config.audioVoice} placeholder="https://… / data:audio/wav;base64,…" onChange={(event) => onConfigChange("audioVoice", event.target.value)} onMouseDown={(event) => event.stopPropagation()} /> : null}
                     <div className="grid grid-cols-3 gap-2.5">
-                        {audioVoiceOptions.map((item) => (
+                        {voiceOptions.map((item) => (
                             <OptionPill key={item.value} selected={voice === item.value} theme={theme} onClick={() => onConfigChange("audioVoice", item.value)}>
                                 {item.label}
                             </OptionPill>
@@ -39,7 +43,7 @@ export function AudioSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 </SettingGroup>
                 <SettingGroup title={t("settingsPanels.audio.format")} color={theme.node.muted}>
                     <div className="grid grid-cols-3 gap-2.5">
-                        {audioFormatOptions.map((item) => (
+                        {formatOptions.map((item) => (
                             <OptionPill key={item.value} selected={format === item.value} theme={theme} onClick={() => onConfigChange("audioFormat", item.value)}>
                                 {item.label}
                             </OptionPill>
